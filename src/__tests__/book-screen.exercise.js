@@ -1,23 +1,43 @@
 import * as React from 'react'
 import {
-  loginAsUser,
   render,
   screen,
   waitForLoadingToFinish,
   userEvent,
+  loginAsUser,
 } from 'test/app-test-utils'
+import faker from 'faker'
 import {buildBook, buildListItem} from 'test/generate'
-import {formatDate} from 'utils/misc'
-import {App} from 'app'
 import * as booksDB from 'test/data/books'
 import * as listItemsDB from 'test/data/list-items'
-import faker from 'faker'
+import {formatDate} from 'utils/misc'
+import {App} from 'app'
 
-test('renders all the book information', async () => {
-  const book = await booksDB.create(buildBook())
+const fakeTimerUserEvent = userEvent.setup({
+  advanceTimers: () => jest.runOnlyPendingTimers(),
+})
+
+async function renderBookScreen({user, book, listItem} = {}) {
+  // Doesn't work user = user === undefined ?? (await loginAsUser())
+  if (user === undefined) {
+    user = await loginAsUser()
+  }
+  if (book === undefined) {
+    book = await booksDB.create(buildBook())
+  }
+  if (listItem === undefined) {
+    listItem = await listItemsDB.create(buildListItem({owner: user, book}))
+  }
   const route = `/book/${book.id}`
 
-  await render(<App />, {route})
+  const renderValue = await render(<App />, {user, route})
+
+  return {...renderValue, user, book, listItem}
+}
+
+test('renders all the book information', async () => {
+  // fetch user, book, but not listItem
+  const {book} = await renderBookScreen({listItem: null})
 
   expect(screen.getByRole('heading', {name: book.title})).toBeInTheDocument()
   expect(screen.getByText(book.author)).toBeInTheDocument()
@@ -46,10 +66,8 @@ test('renders all the book information', async () => {
 })
 
 test('can create a list item for the book', async () => {
-  const book = await booksDB.create(buildBook())
-  const route = `/book/${book.id}`
-
-  await render(<App />, {route})
+  // fetch user, book, but not listItem
+  await renderBookScreen({listItem: null})
 
   const addToListButton = screen.getByRole('button', {name: /add to list/i})
   await userEvent.click(addToListButton)
@@ -78,13 +96,8 @@ test('can create a list item for the book', async () => {
 })
 
 test('can remove a list item for the book', async () => {
-  const user = await loginAsUser()
-
-  const book = await booksDB.create(buildBook())
-  await listItemsDB.create(buildListItem({owner: user, book}))
-  const route = `/book/${book.id}`
-
-  await render(<App />, {route, user})
+  // fetch all user, book, AND listItem
+  await renderBookScreen()
 
   const removeFromListButton = screen.getByRole('button', {
     name: /remove from list/i,
@@ -102,18 +115,7 @@ test('can remove a list item for the book', async () => {
 })
 
 test('can mark a list item as read', async () => {
-  const user = await loginAsUser()
-  const book = await booksDB.create(buildBook())
-  const listItem = await listItemsDB.create(
-    buildListItem({
-      owner: user,
-      book,
-      finishDate: null,
-    }),
-  )
-  const route = `/book/${book.id}`
-
-  await render(<App />, {route, user})
+  const {listItem} = await renderBookScreen()
 
   const markAsReadButton = screen.getByRole('button', {name: /mark as read/i})
   await userEvent.click(markAsReadButton)
@@ -139,15 +141,53 @@ test('can mark a list item as read', async () => {
 test('can edit a note', async () => {
   // using fake timers to skip debounce time
   jest.useFakeTimers()
-  const fakeTimerUserEvent = userEvent.setup({
-    advanceTimers: () => jest.runOnlyPendingTimers(),
-  })
-  const user = await loginAsUser()
-  const book = await booksDB.create(buildBook())
-  const listItem = await listItemsDB.create(buildListItem({owner: user, book}))
-  const route = `/book/${book.id}`
+  const {listItem} = await renderBookScreen()
 
-  await render(<App />, {route, user})
+  const newNotes = faker.lorem.words()
+  const notesTextarea = screen.getByRole('textbox', {name: /notes/i})
+
+  await fakeTimerUserEvent.clear(notesTextarea)
+  await fakeTimerUserEvent.type(notesTextarea, newNotes)
+
+  // wait for the loading spinner to show up
+  await screen.findByLabelText(/loading/i)
+  // wait for the loading spinner to go away
+  await waitForLoadingToFinish()
+
+  expect(notesTextarea).toHaveValue(newNotes)
+
+  expect(await listItemsDB.read(listItem.id)).toMatchObject({
+    notes: newNotes,
+  })
+})
+
+test('shows an error message when the book fails to load', async () => {
+  // using fake timers to skip debounce time
+  jest.useFakeTimers()
+  const {listItem} = await renderBookScreen()
+
+  const newNotes = faker.lorem.words()
+  const notesTextarea = screen.getByRole('textbox', {name: /notes/i})
+
+  await fakeTimerUserEvent.clear(notesTextarea)
+  await fakeTimerUserEvent.type(notesTextarea, newNotes)
+
+  // wait for the loading spinner to show up
+  await screen.findByLabelText(/loading/i)
+  // wait for the loading spinner to go away
+  await waitForLoadingToFinish()
+
+  expect(notesTextarea).toHaveValue(newNotes)
+
+  expect(await listItemsDB.read(listItem.id)).toMatchObject({
+    notes: newNotes,
+  })
+})
+
+test('note update failures are displayed', async () => {
+  // using fake timers to skip debounce time
+  jest.useFakeTimers()
+  const {listItem} = await renderBookScreen()
 
   const newNotes = faker.lorem.words()
   const notesTextarea = screen.getByRole('textbox', {name: /notes/i})
